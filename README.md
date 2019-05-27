@@ -1,74 +1,128 @@
 # LCD-ip-time-rasspberry
 
 
-from subprocess import Popen, PIPE
-from time import sleep
+#!/usr/bin/python
+ 
+import smbus
+import time
+
 from datetime import datetime
-import board
-import digitalio
-import adafruit_character_lcd.character_lcd as characterlcd
+import socket
+import fcntl
+import struct
 
-# Modify this if you have a different sized character LCD
-lcd_columns = 16
-lcd_rows = 2
+# Define some device parameters
+I2C_ADDR  = 0x27 # I2C device address
+LCD_WIDTH = 16   # Maximum characters per line
 
-# compatible with all versions of RPI as of Jan. 2019
-# v1 - v3B+
-lcd_rs = digitalio.DigitalInOut(board.D22)
-lcd_en = digitalio.DigitalInOut(board.D17)
-lcd_d4 = digitalio.DigitalInOut(board.D25)
-lcd_d5 = digitalio.DigitalInOut(board.D24)
-lcd_d6 = digitalio.DigitalInOut(board.D23)
-lcd_d7 = digitalio.DigitalInOut(board.D18)
+# Define some device constants
+LCD_CHR = 1 # Mode - Sending data
+LCD_CMD = 0 # Mode - Sending command
+
+LCD_LINE_1 = 0x80 # LCD RAM address for the 1st line
+LCD_LINE_2 = 0xC0 # LCD RAM address for the 2nd line
+LCD_LINE_3 = 0x94 # LCD RAM address for the 3rd line
+LCD_LINE_4 = 0xD4 # LCD RAM address for the 4th line
+
+LCD_BACKLIGHT  = 0x08  # On
+#LCD_BACKLIGHT = 0x00  # Off
+
+ENABLE = 0b00000100 # Enable bit
+
+# Timing constants
+E_PULSE = 0.0005
+E_DELAY = 0.0005
+
+#Open I2C interface
+#bus = smbus.SMBus(0)  # Rev 1 Pi uses 0
+bus = smbus.SMBus(1) # Rev 2 Pi uses 1
+
+def lcd_init():
+  # Initialise display
+  lcd_byte(0x33,LCD_CMD) # 110011 Initialise
+  lcd_byte(0x32,LCD_CMD) # 110010 Initialise
+  lcd_byte(0x06,LCD_CMD) # 000110 Cursor move direction
+  lcd_byte(0x0C,LCD_CMD) # 001100 Display On,Cursor Off, Blink Off 
+  lcd_byte(0x28,LCD_CMD) # 101000 Data length, number of lines, font size
+  lcd_byte(0x01,LCD_CMD) # 000001 Clear display
+  time.sleep(E_DELAY)
+
+def lcd_byte(bits, mode):
+  # Send byte to data pins
+  # bits = the data
+  # mode = 1 for data
+  #        0 for command
+
+  bits_high = mode | (bits & 0xF0) | LCD_BACKLIGHT
+  bits_low = mode | ((bits<<4) & 0xF0) | LCD_BACKLIGHT
+
+  # High bits
+  bus.write_byte(I2C_ADDR, bits_high)
+  lcd_toggle_enable(bits_high)
+
+  # Low bits
+  bus.write_byte(I2C_ADDR, bits_low)
+  lcd_toggle_enable(bits_low)
+
+def lcd_toggle_enable(bits):
+  # Toggle enable
+  time.sleep(E_DELAY)
+  bus.write_byte(I2C_ADDR, (bits | ENABLE))
+  time.sleep(E_PULSE)
+  bus.write_byte(I2C_ADDR,(bits & ~ENABLE))
+  time.sleep(E_DELAY)
+
+def lcd_string(message,line):
+  # Send string to display
+
+  message = message.ljust(LCD_WIDTH," ")
+
+  lcd_byte(line, LCD_CMD)
+
+  for i in range(LCD_WIDTH):
+    lcd_byte(ord(message[i]),LCD_CHR)
 
 
-# Initialise the lcd class
-lcd = characterlcd.Character_LCD_Mono(lcd_rs, lcd_en, lcd_d4, lcd_d5, lcd_d6,
-                                      lcd_d7, lcd_columns, lcd_rows)
 
-# looking for an active Ethernet or WiFi device
-def find_interface():
-    find_device = "ip addr show"
-    interface_parse = run_cmd(find_device)
-    for line in interface_parse.splitlines():
-        if "state UP" in line:
-            dev_name = line.split(':')[1]
-    return dev_name
 
-# find an active IP on the first LIVE network device
-def parse_ip():
-    find_ip = "ip addr show %s" % interface
-    find_ip = "ip addr show %s" % interface
-    ip_parse = run_cmd(find_ip)
-    for line in ip_parse.splitlines():
-        if "inet " in line:
-            ip = line.split(' ')[5]
-            ip = ip.split('/')[0]
-    return ip
+def get_ip_address(ifname):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    return socket.inet_ntoa(fcntl.ioctl(
+        s.fileno(),
+        0x8915,  # SIOCGIFADDR
+        struct.pack('256s', ifname[:15])
+    )[20:24])
+  
 
-# run unix shell command, return as ASCII
-def run_cmd(cmd):
-    p = Popen(cmd, shell=True, stdout=PIPE)
-    output = p.communicate()[0]
-    return output.decode('ascii')
 
-# wipe LCD screen before we start
-lcd.clear()
 
-# before we start the main loop - detect active network device and ip address
-sleep(2)
-interface = find_interface()
-ip_address = parse_ip()
+def main():
+  # Main program block
 
-while True:
+  # Initialise display
+  lcd_init()
 
-    # date and time
-    lcd_line_1 = datetime.now().strftime('%b %d  %H:%M:%S\n')
+  while True:
+    
+    print( get_ip_address('wlan0'))
+    print (   datetime.now().strftime('%b %d  %H:%M:%S\n')   )
+    # Send some test
+    lcd_string("Muhammed",LCD_LINE_1)
+    lcd_string("Essa",LCD_LINE_2)
 
-    # current ip address
-    lcd_line_2 = "IP " + ip_address
+    time.sleep(4)
+  
+    # Send some more text
+    lcd_string(   get_ip_address('wlan0')     ,LCD_LINE_1)
+    lcd_string(   datetime.now().strftime('%b %d  %H:%M:%S\n')   ,LCD_LINE_2)
 
-    # combine both lines into one update to the display
-    lcd.message = lcd_line_1 + lcd_line_2
+    time.sleep(3)
 
-    sleep(2)
+if __name__ == '__main__':
+
+  try:
+    main()
+  except KeyboardInterrupt:
+    pass
+  finally:
+    lcd_byte(0x01, LCD_CMD)
